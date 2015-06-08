@@ -7,10 +7,11 @@
 #include "AT24C04C.h"
 #include "global.h"
 #include "attitude_stabilizer.h"
+#include "checksum.h"
 
 #define QUADCOPTER 0
 
-bool eeprom_is_wrote;
+bool eeprom_is_written;
 
 int modifiable_data_cnt = 0;
 global_data_t global_mav_data_list[GLOBAL_DATA_CNT] = {
@@ -92,7 +93,7 @@ void init_global_data(void)
 			modifiable_data_cnt++;
 	}
 	
-	if(eeprom_is_wrote == true) {
+	if(eeprom_is_written == true) {
 		/* Clear the EEPROM */
 		uint8_t buffer[1024] = {'\0'};
 		eeprom.write(buffer, 0, 1024);
@@ -297,6 +298,7 @@ int save_global_data_into_eeprom(int index)
 	uint8_t *buffer;
 	uint16_t eeprom_address;
 	uint8_t data_len;
+	uint8_t checksum;
 
 	switch(global_mav_data_list[index].type) {
 	    case UINT8:
@@ -333,17 +335,22 @@ int save_global_data_into_eeprom(int index)
 		//Get the eeprom address
 		eeprom_address = global_mav_data_list[index].eeprom_address;
 
+		//Generate checksum data
+		checksum = checksum_generate(buffer, data_len);
+
 		/* Write the data into the eeprom */
 		eeprom.write(buffer, eeprom_address, data_len); //Payload, n byte
-		eeprom.write('\0', eeprom_address + data_len + 1, 1); //Checksum, 1 byte
+		eeprom.write(&checksum, eeprom_address + data_len + 1, 1); //Checksum, 1 byte
 
 		/* Verify the data */
 		Data data_eeprom;
 		uint8_t buffer_verify[5]; //Hard code, the max size of the multiple data type
+		uint8_t checksum_verify;
 		bool data_is_correct;
 
-		eeprom.read(buffer_verify, eeprom_address, data_len);
+		eeprom.read(buffer_verify, eeprom_address, data_len + 1); //Plus 1 for checksum
 		memcpy(&data_eeprom, buffer_verify, data_len);
+		memcpy(&checksum_verify, buffer_verify + data_len + 1, 1);
 
 		//TODO: The code is too long, improve this!
 		switch(global_mav_data_list[index].type) {
@@ -377,13 +384,15 @@ int save_global_data_into_eeprom(int index)
 			break;
 		}
 
+		if(checksum_verify != checksum) data_is_correct = false;
+
 		if(data_is_correct == false) {
 			printf("EEPROM Data Check is failed!"); //TODO:Data is not correct, handle this situation!
 		}
 
 		/* Set up the first byte of eeprom (data = global data count) */
-		if(eeprom_is_wrote == false) {
-			eeprom_is_wrote = true;
+		if(eeprom_is_written == false) {
+			eeprom_is_written = true;
 		}
 	}
 
@@ -399,12 +408,13 @@ void load_global_data_from_eeprom(void)
 
 	/* If first byte's value of EEPROM is equal to the global data count, it means 
 	   the EEPROM has been written */	
-	eeprom_is_wrote = (eeprom_data[0] == get_global_data_count() ? true : false);
+	eeprom_is_written = (eeprom_data[0] == get_global_data_count() ? true : false);
 
 	bool parameter_config;
 	/* Start from second byte, 
 	 * First byte: check the eeprom has been use or not */
 	uint16_t eeprom_address = 1;
+	uint8_t checksum;
 	Type type;
 	uint8_t type_size;
 	Data data;
@@ -444,13 +454,17 @@ void load_global_data_from_eeprom(void)
 				break;
 			}
 
-			if(eeprom_is_wrote == true) {
+			if(eeprom_is_written == true) {
 				/* Read the data from the eeprom */
 				eeprom.read(eeprom_data, eeprom_address, type_size + 1);
 				memcpy(&data, eeprom_data, type_size);
+				memcpy(&checksum, eeprom_data + type_size + 1, 1);
 	
-				//TODO: Checksum Test to test the eeprom data
-				set_global_data_value(i, type, DATA_CAST(data));
+				if(checksum_test(eeprom_data, type_size, checksum) == 0) {
+					set_global_data_value(i, type, DATA_CAST(data));
+				} else {
+					printf("Checksum test is failed!"); //TODO:Data is not correct, handle this situation!
+				}
 			}
 
 			//One more byte for checksum
