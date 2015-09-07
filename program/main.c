@@ -17,13 +17,15 @@
 #include "timers.h"
 
 #include "global.h"
-#include "communication.h"
+#include "mavlink_manager.h"
 #include "system_time.h"
 #include "lea6h_ubx.h"
+
 extern uint8_t estimator_trigger_flag;
 
 /* FreeRTOS */
 extern xSemaphoreHandle serial_tx_wait_sem;
+extern xSemaphoreHandle usart3_dma_send_sem;
 extern xQueueHandle serial_rx_queue;
 extern xQueueHandle gps_serial_queue;
 xTimerHandle xTimers[1];
@@ -56,9 +58,12 @@ void vApplicationMallocFailedHook(void)
 int main(void)
 {
 	vSemaphoreCreateBinary(serial_tx_wait_sem);
-	serial_rx_queue = xQueueCreate(5, sizeof(serial_msg));
-	gps_serial_queue = xQueueCreate(5, sizeof(serial_msg));
+	vSemaphoreCreateBinary(usart3_dma_send_sem);
 	vSemaphoreCreateBinary(flight_control_sem);
+
+	serial_rx_queue = xQueueCreate(256, sizeof(serial_msg));
+	gps_serial_queue = xQueueCreate(5, sizeof(serial_msg));
+
 	/* Global data initialazition */
 	init_global_data();
 
@@ -71,8 +76,6 @@ int main(void)
 	pwm_input_output_init();
 	init_pwm_motor();
 	i2c_Init();
-	usart2_dma_init();
-
 	CAN2_Config();
 	CAN2_NVIC_Config();
 
@@ -87,6 +90,7 @@ int main(void)
 		NULL
 	);
 
+
 	/* Navigation task */
 	xTaskCreate(
 		(pdTASK_CODE)navigation_task,
@@ -99,32 +103,46 @@ int main(void)
 
 	/* Ground station communication task */	
 	xTaskCreate(
-		(pdTASK_CODE)ground_station_task,
-		(signed portCHAR *)"ground station send task",
+		(pdTASK_CODE)mavlink_receiver_task,
+		(signed portCHAR *)"mavlink receiver task",
 		2048,
+		NULL,
+		tskIDLE_PRIORITY + 6,
+		NULL
+	);
+
+	xTaskCreate(
+		(pdTASK_CODE)mavlink_broadcast_task,
+		(signed portCHAR *)"mavlink broadcast task",
+		1024,
 		NULL,
 		tskIDLE_PRIORITY + 5,
 		NULL
 	);
 
 	xTaskCreate(
-		(pdTASK_CODE)mavlink_receiver_task,
-		(signed portCHAR *) "ground station receive task",
-		4096,
-		NULL,
-		tskIDLE_PRIORITY + 7, NULL
-	);
-
-	xTaskCreate(
 		(pdTASK_CODE)gps_receive_task,
+
 		(signed portCHAR *) "gps receive task",
 		2048,
 		NULL,
 		tskIDLE_PRIORITY + 8, NULL
 
 	);
+
+	xTaskCreate(
+		(pdTASK_CODE)UART_TX_service_task,
+
+		(signed portCHAR *) "uart service task",
+		512,
+		NULL,
+		tskIDLE_PRIORITY + 8, NULL
+
+	);
+
 	vTaskStartScheduler();
 
 	return 0;
 }
+
 
